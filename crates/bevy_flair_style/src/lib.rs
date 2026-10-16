@@ -347,6 +347,7 @@ pub struct FlairStylePlugin;
 impl Plugin for FlairStylePlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<StyleBlock>()
+            .register_type::<animations::AnimationProgress>()
             .init_asset::<StyleSheet>()
             .init_resource::<GlobalChangeDetection>()
             .register_required_components::<Node, Styled>()
@@ -556,6 +557,15 @@ mod tests {
         ));
         app.finish();
         app
+    }
+
+    #[test]
+    fn styled_world_entities_can_have_unstyled_ancestors() {
+        let mut app = app();
+        let parent = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((Styled::default(), ChildOf(parent)));
+        app.update();
+        app.update();
     }
 
     #[test]

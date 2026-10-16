@@ -245,6 +245,22 @@ impl fmt::Debug for Animation {
 }
 
 impl Animation {
+    /// Samples the resolved keyframe curve at a normalized effect progress.
+    ///
+    /// This bypasses the playback clock, delay, iterations, direction and fill
+    /// mode. Keyframe easing is retained. It does not advance playback or emit
+    /// lifecycle events. Non-finite progress is rejected; finite values clamp
+    /// to the endpoints. Canceled animations do not produce values.
+    pub fn sample_at_progress(&self, progress: f32) -> Option<ReflectValue> {
+        if !progress.is_finite() || self.state == AnimationState::Canceled {
+            return None;
+        }
+        Some(
+            self.sampled_curve
+                .sample_unchecked(progress.clamp(0.0, 1.0)),
+        )
+    }
+
     /// Creates a new keyframes animation.
     /// At least 2 keyframes are required.
     ///
@@ -568,6 +584,40 @@ mod tests {
 
     static REFLECT_ANIMATABLE_F32: LazyLock<ReflectAnimatable> =
         LazyLock::new(|| <ReflectAnimatable as CreateTypeData<f32>>::create_type_data(()));
+
+    #[test]
+    fn external_sampling_is_reversible_finite_and_independent_of_playback() {
+        let mut animation = Animation::new(
+            Arc::from("test"),
+            TEST_KEYFRAMES,
+            &AnimationOptions {
+                initial_delay: TWO_SECONDS,
+                duration: Duration::ZERO,
+                direction: AnimationDirection::Reverse,
+                play_state: AnimationPlayState::Paused,
+                ..AnimationOptions::DEFAULT
+            },
+            &REFLECT_ANIMATABLE_F32,
+        );
+        for (progress, expected) in [
+            (0.0, 0.0),
+            (0.8, 80.0),
+            (0.2, 20.0),
+            (1.0, 100.0),
+            (-1.0, 0.0),
+            (2.0, 100.0),
+        ] {
+            assert_eq!(
+                animation.sample_at_progress(progress),
+                Some(ReflectValue::Float(expected))
+            );
+        }
+        assert_eq!(animation.total_elapsed(), Duration::ZERO);
+        assert_eq!(animation.sample_at_progress(f32::NAN), None);
+        assert_eq!(animation.sample_at_progress(f32::INFINITY), None);
+        animation.cancel();
+        assert_eq!(animation.sample_at_progress(0.5), None);
+    }
 
     #[test]
     fn basic_animation() {

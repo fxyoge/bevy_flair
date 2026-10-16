@@ -16,3 +16,5 @@ pub use easing::*;
 pub use keyframes::*;
 pub use properties::*;
 pub use reflect::{ReflectAnimatable, ReflectAnimationsPlugin};
+mod progress;
+pub use progress::AnimationProgress;

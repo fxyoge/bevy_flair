@@ -554,13 +554,21 @@ pub(crate) fn auto_remove_components_condition(
 
 pub(crate) fn set_animation_computed_values(
     static_property_maps: Res<StaticPropertyMaps>,
-    mut properties_query: Query<(NameOrEntity, &mut StyleProperties, &mut StyleMarkers)>,
+    mut properties_query: Query<(
+        NameOrEntity,
+        &mut StyleProperties,
+        &mut StyleMarkers,
+        Option<&crate::animations::AnimationProgress>,
+    )>,
     #[cfg(feature = "detailed_trace")] debug_helper: PropertyIdDebugHelperParam,
 ) {
-    for (_name_or_entity, mut properties, mut marker) in &mut properties_query {
+    for (_name_or_entity, mut properties, mut marker, progress) in &mut properties_query {
         if properties.has_animations_or_transitions() {
             marker.set_needs_apply_pending_properties();
-            properties.set_animation_computed_values(&static_property_maps);
+            properties.set_animation_computed_values_at_progress(
+                &static_property_maps,
+                progress.map(|p| p.get()),
+            );
 
             #[cfg(feature = "detailed_trace")]
             if properties.pending_computed_animation_values
@@ -621,7 +629,9 @@ pub(crate) fn compute_property_values(
             || {
                 styled_children
                     .iter_ancestors(entity.entity)
-                    .map(|ancestor| &property_values_copy_query.get(ancestor).unwrap().0)
+                    .filter_map(|ancestor| {
+                        property_values_copy_query.get(ancestor).ok().map(|p| &p.0)
+                    })
             },
         );
         #[cfg(feature = "detailed_trace")]
@@ -631,14 +641,17 @@ pub(crate) fn compute_property_values(
 
 pub(crate) fn tick_animations<T: Default + Send + Sync + 'static>(
     time: Res<Time<T>>,
-    mut properties_query: Query<&mut StyleProperties>,
+    mut properties_query: Query<(
+        &mut StyleProperties,
+        Has<crate::animations::AnimationProgress>,
+    )>,
 ) {
     let delta = time.delta();
 
-    for mut properties in &mut properties_query {
+    for (mut properties, external) in &mut properties_query {
         if properties.has_animations_or_transitions() {
             properties.clear_finished_and_canceled_animations();
-            properties.tick_animations(delta);
+            properties.tick_animations_with_external_control(delta, external);
         }
     }
 }

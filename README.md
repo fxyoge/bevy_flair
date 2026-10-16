@@ -305,6 +305,31 @@ Common CSS selectors and combinators, via the [selectors](https://crates.io/crat
 
 Contributions are welcome! Feel free to fork the repository and submit a pull request.
 
+## External animation progress
+
+`bevy_flair::prelude::AnimationProgress` lets an application scrub the existing
+CSS keyframe animations on an entity without replacing the CSS loader, parser,
+variable resolution, or interpolation pipeline:
+
+```rust,ignore
+commands.entity(target).insert(AnimationProgress::new(0.35).unwrap());
+```
+
+Progress is normalized effect progress, clamped to 0–1; non-finite input returns
+`None`. It samples all keyframe animations on that entity, including keyframe
+easing, independently of duration, delay, direction, iteration count, fill mode,
+and play state. Transitions retain their normal clock. External sampling emits
+no clock-driven start/finish events. Removing the component resumes the suspended
+keyframe clock. Animation cancellation and normal stylesheet reload still apply.
+
+Update the component before `StyleSystems::SetAnimationValues`, and before
+`StyleSystems::TickAnimations` when taking/releasing clock ownership. For drivers
+that depend on this frame's computed styles, `StyleProperties::sample_property`
+can read pending values and clock-driven effects after
+`StyleSystems::ResolveAnimations` and before `StyleSystems::SetAnimationValues`.
+This API deliberately has no timeline naming, hierarchy scoping, or renderer
+policy: those belong to its consumer.
+
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for more details.

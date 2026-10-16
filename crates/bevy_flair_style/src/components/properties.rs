@@ -143,6 +143,36 @@ fn get_reflect_animatable<'a>(
 }
 
 impl StyleProperties {
+    /// Samples a property's value, including transitions and clock-driven
+    /// keyframe effects, without advancing their clocks. This does not consult
+    /// an entity's external `AnimationProgress` component. Between
+    /// `ResolveAnimations` and `SetAnimationValues`, this includes this frame's
+    /// pending style changes. Useful for connecting external animation drivers.
+    pub fn sample_property(&self, property_id: ComponentPropertyId) -> Option<ReflectValue> {
+        let base = if self.pending_computed_values.is_empty() {
+            &self.computed_values
+        } else {
+            &self.pending_computed_values
+        };
+        if base.is_empty() {
+            return None;
+        }
+        let mut value = base[property_id].clone().into_option();
+        if let Some(transition) = self.transitions.get(&property_id) {
+            value = Some(transition.sample_value());
+        }
+        for animations in self.animations.values() {
+            for (id, animation) in animations {
+                if *id == property_id
+                    && let Some(sample) = animation.sample_value()
+                {
+                    value = Some(sample);
+                }
+            }
+        }
+        value
+    }
+
     pub(crate) fn compute_pending_property_values<
         'a,
         I: IntoIterator<Item = &'a PropertyMap<PropertyValue>>,
@@ -300,9 +330,18 @@ impl StyleProperties {
     }
 
     // Sets `self.pending_computed_animation_values`
+    #[cfg(test)]
     pub(crate) fn set_animation_computed_values(
         &mut self,
         static_property_maps: &StaticPropertyMaps,
+    ) {
+        self.set_animation_computed_values_at_progress(static_property_maps, None);
+    }
+
+    pub(crate) fn set_animation_computed_values_at_progress(
+        &mut self,
+        static_property_maps: &StaticPropertyMaps,
+        progress: Option<f32>,
     ) {
         debug_assert_empty!(
             "set_animation_computed_values",
@@ -325,7 +364,11 @@ impl StyleProperties {
 
         for (property_id, value) in self.animations.values().flat_map(|animations| {
             animations.iter().filter_map(|(property_id, animation)| {
-                Some((*property_id, animation.sample_value()?))
+                let value = match progress {
+                    Some(progress) => animation.sample_at_progress(progress),
+                    None => animation.sample_value(),
+                }?;
+                Some((*property_id, value))
             })
         }) {
             self.pending_computed_animation_values[property_id] = value.into();
@@ -567,7 +610,16 @@ impl StyleProperties {
         !self.transitions.is_empty() || !self.animations.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn tick_animations(&mut self, delta: Duration) {
+        self.tick_animations_with_external_control(delta, false);
+    }
+
+    pub(crate) fn tick_animations_with_external_control(
+        &mut self,
+        delta: Duration,
+        external: bool,
+    ) {
         for transition in self.transitions.values_mut() {
             let was_pending = transition.state == TransitionState::Pending;
 
@@ -591,6 +643,9 @@ impl StyleProperties {
             }
         }
 
+        if external {
+            return;
+        }
         for animations in self.animations.values_mut() {
             for (property_id, animation) in animations.iter_mut() {
                 let property_id = *property_id;
@@ -1716,6 +1771,59 @@ mod tests {
                 .into_iter()
                 .collect(),
         )
+    }
+
+    #[test]
+    fn external_sampling_suspends_only_keyframe_clocks_and_preserves_transitions() {
+        use bevy_flair_core::{ComputedValue, PropertyMap};
+        let mut properties = new_properties();
+        set_property_values_and_compute!(properties, { PROPERTY_1 => 0.0, PROPERTY_2 => 0.0 });
+        apply_computed_values!(properties);
+        properties.set_transition_options(PropertiesHashMap::from_iter(properties! {
+            PROPERTY_2 => TRANSITION_1_SECOND,
+        }));
+        set_property_values_and_compute!(properties, { PROPERTY_1 => 0.0, PROPERTY_2 => 10.0 });
+        apply_computed_values!(properties);
+        properties.set_animations(
+            vec![AnimationConfiguration {
+                name: "external".into(),
+                options: DEFAULT_ANIMATION_OPTIONS,
+                ..Default::default()
+            }],
+            &TYPE_REGISTRY,
+            &PROPERTY_REGISTRY,
+            mock_resolve_animation,
+        );
+        properties.tick_animations_with_external_control(Duration::from_millis(250), true);
+        assert!(properties.pending_animation_events.is_empty());
+        assert_eq!(
+            properties.animations["external"][0].1.total_elapsed(),
+            Duration::ZERO
+        );
+        assert_eq!(
+            properties.sample_property(property_id!(PROPERTY_2)),
+            Some(value!(2.5))
+        );
+        for (progress, expected) in [(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)] {
+            properties
+                .set_animation_computed_values_at_progress(&STATIC_PROPERTY_MAPS, Some(progress));
+            assert_eq!(
+                properties.pending_computed_animation_values[property_id!(PROPERTY_1)],
+                ComputedValue::Value(value!(expected))
+            );
+            properties.pending_computed_animation_values = PropertyMap::default();
+        }
+        properties.tick_animations_with_external_control(Duration::from_millis(250), false);
+        assert_eq!(
+            properties.animations["external"][0].1.total_elapsed(),
+            Duration::from_millis(250)
+        );
+        assert!(
+            properties
+                .pending_animation_events
+                .iter()
+                .any(|e| e.event_type == AnimationEventType::Started)
+        );
     }
 
     #[test]
